@@ -745,6 +745,14 @@ def setup_chat_routes(
                                 }
                                 yield f'data: {json.dumps({"type": "metrics", "data": last_metrics})}\n\n'
                             if full_response:
+                                try:
+                                    from src.pii_filter import restore, active_pii_mapping
+                                    _pii_map = active_pii_mapping.get()
+                                    if _pii_map:
+                                        full_response = restore(full_response, _pii_map)
+                                        active_pii_mapping.set({})
+                                except Exception:
+                                    pass
                                 _saved_id = save_assistant_response(
                                     sess, session_manager, session, full_response, last_metrics,
                                     character_name=ctx.preset.character_name,

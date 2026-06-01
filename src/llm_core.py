@@ -519,7 +519,7 @@ def normalize_model_id(endpoint_url: str, requested: str, timeout: int = LLMConf
     return None
 
 def llm_call(url: str, model: str, messages: List[Dict], temperature: float = LLMConfig.DEFAULT_TEMPERATURE,
-             max_tokens: int = LLMConfig.DEFAULT_MAX_TOKENS, headers: Optional[Dict] = None, 
+             max_tokens: int = LLMConfig.DEFAULT_MAX_TOKENS, headers: Optional[Dict] = None,
              timeout: int = LLMConfig.DEFAULT_TIMEOUT, prompt_type: Optional[str] = None) -> str:
     """Synchronous LLM call with optional prompt type enhancement."""
     h = _provider_headers(_detect_provider(url))
@@ -535,6 +535,17 @@ def llm_call(url: str, model: str, messages: List[Dict], temperature: float = LL
         h.update(headers)
 
     messages_copy = _sanitize_llm_messages(messages)
+
+    pii_mapping: dict = {}
+    try:
+        from src.settings import load_features
+        from src.pii_filter import redact, restore, is_commercial_url
+        if load_features().get("pii_filter") and is_commercial_url(url):
+            for msg in messages_copy:
+                if msg.get("role") == "user" and isinstance(msg.get("content"), str):
+                    msg["content"], pii_mapping = redact(msg["content"])
+    except Exception:
+        pass
 
     # Consolidate multiple system messages into one at the start.
     sys_parts = []
@@ -588,6 +599,12 @@ def llm_call(url: str, model: str, messages: List[Dict], temperature: float = LL
             response = _parse_ollama_response(data)
         else:
             response = data["choices"][0]["message"]["content"]
+        if pii_mapping:
+            try:
+                from src.pii_filter import restore
+                response = restore(response, pii_mapping)
+            except Exception:
+                pass
         _set_cached_response(cache_key, response)
         return response
     except Exception:
@@ -765,6 +782,19 @@ async def stream_llm(url: str, model: str, messages: List[Dict], temperature: fl
         messages_copy = [{"role": "system", "content": "\n\n".join(sys_parts)}] + non_sys
     else:
         messages_copy = non_sys
+
+    pii_mapping: dict = {}
+    try:
+        from src.settings import load_features
+        from src.pii_filter import redact, is_commercial_url, active_pii_mapping
+        if load_features().get("pii_filter") and is_commercial_url(url):
+            for msg in messages_copy:
+                if msg.get("role") == "user" and isinstance(msg.get("content"), str):
+                    msg["content"], pii_mapping = redact(msg["content"])
+            if pii_mapping:
+                active_pii_mapping.set(pii_mapping)
+    except Exception:
+        pass
 
     if provider == "anthropic":
         target_url = _normalize_anthropic_url(url)
